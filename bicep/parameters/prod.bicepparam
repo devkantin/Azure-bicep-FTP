@@ -1,0 +1,11 @@
+using '../main.bicep'
+
+param environment = 'prod'
+param location = 'eastus'
+param adminUsername = 'eftadmin'
+param vmSize = 'Standard_D4s_v3'
+param vnetAddressPrefix = '10.1.0.0/16'
+param subnetPrefix = '10.1.1.0/24'
+param lbFrontendIp = '10.1.1.100'
+param vm01Ip = '10.1.1.10'
+param vm02Ip = '10.1.1.11'

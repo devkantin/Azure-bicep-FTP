@@ -1,0 +1,225 @@
+name: Deploy EFT Infrastructure
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'bicep/**'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options: [dev, prod]
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'deploy'
+        type: choice
+        options: [deploy, destroy]
+
+permissions:
+  id-token: write
+  contents: read
+
+# Prevent concurrent deploys to the same environment
+concurrency:
+  group: deploy-${{ github.event.inputs.environment || 'dev' }}
+  cancel-in-progress: false
+
+jobs:
+  # ─── Deploy Dev ─────────────────────────────────────────────────────────────
+  deploy-dev:
+    name: Deploy to Dev
+    runs-on: ubuntu-latest
+    environment: dev
+    if: |
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' &&
+       github.event.inputs.environment == 'dev' &&
+       github.event.inputs.action == 'deploy')
+    env:
+      RESOURCE_GROUP: rg-eft-dev
+    outputs:
+      vm01Name: ${{ steps.deploy.outputs.vm01Name }}
+      vm02Name: ${{ steps.deploy.outputs.vm02Name }}
+      lbPrivateIp: ${{ steps.deploy.outputs.lbPrivateIp }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Ensure resource group exists
+        run: |
+          az group create \
+            --name ${{ env.RESOURCE_GROUP }} \
+            --location eastus \
+            --tags environment=dev project=globalscape-eft managedBy=bicep
+
+      - name: Deploy infrastructure
+        id: deploy
+        run: |
+          OUTPUT=$(az deployment group create \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --template-file bicep/main.bicep \
+            --parameters bicep/parameters/dev.bicepparam \
+            --parameters adminPassword="${{ secrets.EFT_ADMIN_PASSWORD }}" \
+            --name "eft-deploy-${{ github.run_number }}" \
+            --output json)
+
+          echo "vm01Name=$(echo $OUTPUT | jq -r '.properties.outputs.vm01Name.value')" >> $GITHUB_OUTPUT
+          echo "vm02Name=$(echo $OUTPUT | jq -r '.properties.outputs.vm02Name.value')" >> $GITHUB_OUTPUT
+          echo "lbPrivateIp=$(echo $OUTPUT | jq -r '.properties.outputs.lbPrivateIp.value')" >> $GITHUB_OUTPUT
+
+      - name: Run Pester infrastructure tests
+        shell: pwsh
+        run: |
+          Install-Module -Name Az.Accounts, Az.Compute, Az.Network, Az.Storage -Force -AllowClobber -Scope CurrentUser -ErrorAction Stop
+          Install-Module -Name Pester -MinimumVersion '5.0.0' -Force -Scope CurrentUser -ErrorAction Stop
+
+          $container = New-PesterContainer -Path 'tests/infrastructure.tests.ps1' -Data @{
+            ResourceGroupName = '${{ env.RESOURCE_GROUP }}'
+            SubscriptionId    = '${{ secrets.AZURE_SUBSCRIPTION_ID }}'
+          }
+          $config = New-PesterConfiguration
+          $config.Run.Container           = $container
+          $config.Output.Verbosity        = 'Detailed'
+          $config.TestResult.Enabled      = $true
+          $config.TestResult.OutputPath   = 'test-results-dev.xml'
+          $config.Run.Exit                = $true
+
+          Invoke-Pester -Configuration $config
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pester-test-results-dev-${{ github.run_number }}
+          path: test-results-dev.xml
+
+      - name: Publish test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Pester Tests - Dev
+          path: test-results-dev.xml
+          reporter: java-junit
+
+  # ─── Deploy Prod ────────────────────────────────────────────────────────────
+  deploy-prod:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    environment: prod
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.environment == 'prod' &&
+      github.event.inputs.action == 'deploy'
+    env:
+      RESOURCE_GROUP: rg-eft-prod
+    outputs:
+      vm01Name: ${{ steps.deploy.outputs.vm01Name }}
+      vm02Name: ${{ steps.deploy.outputs.vm02Name }}
+      lbPrivateIp: ${{ steps.deploy.outputs.lbPrivateIp }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_PROD }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_PROD }}
+
+      - name: Ensure resource group exists
+        run: |
+          az group create \
+            --name ${{ env.RESOURCE_GROUP }} \
+            --location eastus \
+            --tags environment=prod project=globalscape-eft managedBy=bicep
+
+      - name: Deploy infrastructure
+        id: deploy
+        run: |
+          OUTPUT=$(az deployment group create \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --template-file bicep/main.bicep \
+            --parameters bicep/parameters/prod.bicepparam \
+            --parameters adminPassword="${{ secrets.EFT_ADMIN_PASSWORD_PROD }}" \
+            --name "eft-deploy-${{ github.run_number }}" \
+            --output json)
+
+          echo "vm01Name=$(echo $OUTPUT | jq -r '.properties.outputs.vm01Name.value')" >> $GITHUB_OUTPUT
+          echo "vm02Name=$(echo $OUTPUT | jq -r '.properties.outputs.vm02Name.value')" >> $GITHUB_OUTPUT
+          echo "lbPrivateIp=$(echo $OUTPUT | jq -r '.properties.outputs.lbPrivateIp.value')" >> $GITHUB_OUTPUT
+
+      - name: Run Pester infrastructure tests
+        shell: pwsh
+        run: |
+          Install-Module -Name Az.Accounts, Az.Compute, Az.Network, Az.Storage -Force -AllowClobber -Scope CurrentUser -ErrorAction Stop
+          Install-Module -Name Pester -MinimumVersion '5.0.0' -Force -Scope CurrentUser -ErrorAction Stop
+
+          $container = New-PesterContainer -Path 'tests/infrastructure.tests.ps1' -Data @{
+            ResourceGroupName = '${{ env.RESOURCE_GROUP }}'
+            SubscriptionId    = '${{ secrets.AZURE_SUBSCRIPTION_ID_PROD }}'
+          }
+          $config = New-PesterConfiguration
+          $config.Run.Container           = $container
+          $config.Output.Verbosity        = 'Detailed'
+          $config.TestResult.Enabled      = $true
+          $config.TestResult.OutputPath   = 'test-results-prod.xml'
+          $config.Run.Exit                = $true
+
+          Invoke-Pester -Configuration $config
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pester-test-results-prod-${{ github.run_number }}
+          path: test-results-prod.xml
+
+      - name: Publish test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Pester Tests - Prod
+          path: test-results-prod.xml
+          reporter: java-junit
+
+  # ─── Destroy ────────────────────────────────────────────────────────────────
+  destroy:
+    name: Destroy Infrastructure
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.action == 'destroy'
+    environment: ${{ github.event.inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ github.event.inputs.environment == 'prod' && secrets.AZURE_CLIENT_ID_PROD || secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ github.event.inputs.environment == 'prod' && secrets.AZURE_SUBSCRIPTION_ID_PROD || secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Delete resource group
+        run: |
+          RG_NAME="rg-eft-${{ github.event.inputs.environment }}"
+          echo "Deleting resource group: $RG_NAME"
+          az group delete --name "$RG_NAME" --yes --no-wait
+          echo "Deletion of $RG_NAME initiated — check Azure Portal for completion status"
