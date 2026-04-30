@@ -198,19 +198,59 @@ Go to **Settings → Environments** and create:
 - `dev` — no protection rules (auto-deploys on push to main)
 - `prod` — add required reviewers for approval gate
 
-### 3. Add GitHub Secrets
+### 3. Required Environment Variables & Secrets
 
-Add these secrets to each environment (**Settings → Environments → Secrets**):
+Add these in **Settings → Environments → Secrets and variables** for each environment.
 
-| Secret | Environment | Description |
+#### Secrets (sensitive — never logged)
+
+| Secret Name | Environment | Where to find it | Example |
+|---|---|---|---|
+| `AZURE_TENANT_ID` | dev + prod | Azure Portal → Azure Active Directory → Overview → Tenant ID | `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` |
+| `AZURE_CLIENT_ID` | dev | App Registration → Overview → Application (client) ID | `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` |
+| `AZURE_SUBSCRIPTION_ID` | dev | Azure Portal → Subscriptions → Subscription ID | `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` |
+| `AZURE_CLIENT_ID_PROD` | prod | App Registration (prod) → Overview → Application (client) ID | `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` |
+| `AZURE_SUBSCRIPTION_ID_PROD` | prod | Azure Portal → Subscriptions → Subscription ID | `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` |
+| `EFT_ADMIN_PASSWORD` | dev | Your choice — min 12 chars, upper+lower+number+symbol | `P@ssw0rd!Dev123` |
+| `EFT_ADMIN_PASSWORD_PROD` | prod | Your choice — min 12 chars, upper+lower+number+symbol | `P@ssw0rd!Prod456` |
+
+#### Variables (non-sensitive — stored in plain text)
+
+| Variable Name | Environment | Value |
 |---|---|---|
-| `AZURE_TENANT_ID` | dev + prod | Azure AD tenant ID |
-| `AZURE_CLIENT_ID` | dev | App registration client ID for dev |
-| `AZURE_SUBSCRIPTION_ID` | dev | Dev Azure subscription ID |
-| `AZURE_CLIENT_ID_PROD` | prod | App registration client ID for prod |
-| `AZURE_SUBSCRIPTION_ID_PROD` | prod | Prod Azure subscription ID |
-| `EFT_ADMIN_PASSWORD` | dev | VM admin password (dev) |
-| `EFT_ADMIN_PASSWORD_PROD` | prod | VM admin password (prod) |
+| `AZURE_LOCATION` | dev + prod | `eastus` |
+| `DEV_RESOURCE_GROUP` | dev | `rg-eft-dev` |
+| `PROD_RESOURCE_GROUP` | prod | `rg-eft-prod` |
+
+#### Quick reference — set via GitHub CLI
+
+```bash
+# Authenticate
+gh auth login
+
+# Create environments
+gh api repos/devkantin/Azure-bicep-FTP/environments/dev --method PUT
+gh api repos/devkantin/Azure-bicep-FTP/environments/prod --method PUT
+
+# Set secrets (dev)
+gh secret set AZURE_TENANT_ID          --env dev --repo devkantin/Azure-bicep-FTP
+gh secret set AZURE_CLIENT_ID          --env dev --repo devkantin/Azure-bicep-FTP
+gh secret set AZURE_SUBSCRIPTION_ID    --env dev --repo devkantin/Azure-bicep-FTP
+gh secret set EFT_ADMIN_PASSWORD       --env dev --repo devkantin/Azure-bicep-FTP
+
+# Set secrets (prod)
+gh secret set AZURE_CLIENT_ID_PROD          --env prod --repo devkantin/Azure-bicep-FTP
+gh secret set AZURE_SUBSCRIPTION_ID_PROD    --env prod --repo devkantin/Azure-bicep-FTP
+gh secret set EFT_ADMIN_PASSWORD_PROD       --env prod --repo devkantin/Azure-bicep-FTP
+
+# Set variables
+gh variable set AZURE_LOCATION       --env dev  --body "eastus" --repo devkantin/Azure-bicep-FTP
+gh variable set DEV_RESOURCE_GROUP   --env dev  --body "rg-eft-dev" --repo devkantin/Azure-bicep-FTP
+gh variable set AZURE_LOCATION       --env prod --body "eastus" --repo devkantin/Azure-bicep-FTP
+gh variable set PROD_RESOURCE_GROUP  --env prod --body "rg-eft-prod" --repo devkantin/Azure-bicep-FTP
+```
+
+> `gh secret set` will interactively prompt for the value so nothing is typed in plain text on the command line.
 
 ---
 
